@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Run artefacts. Every entrypoint writes under the working directory; none of this
+# belongs in the repository.
+.cache/
+checkpoint/
+checkpoint_merged/
+diagnostics/
+eval_outputs/
+logs/
+outputs/
+validation_log/
+wandb/
+analysis_out/
+
+# Slurm stdout/stderr (%x_%j.out / %x_%j.err in the submit directory)
+*.out
+*.err
+
+# Local runtime configuration (keep your copy outside the checkout; see slurm/env.example.sh)
+slurm/env.local.sh

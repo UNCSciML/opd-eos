@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opd-k2-vllm-plugin"
+version = "0.1.0"
+description = "vLLM out-of-tree model: K2-Horizon-7B dense = Llama + grouped RMSNorm (opd-length-inflation)"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+k2_horizon = "opd_k2_vllm_plugin:register"
+
+[tool.setuptools]
+packages = ["opd_k2_vllm_plugin"]
