@@ -8,7 +8,7 @@ __pycache__/
 # Run artefacts. Every entrypoint writes under the working directory; none of this
 # belongs in the repository.
 .cache/
-checkpoint/
+/checkpoint/
 checkpoint_merged/
 diagnostics/
 eval_outputs/
