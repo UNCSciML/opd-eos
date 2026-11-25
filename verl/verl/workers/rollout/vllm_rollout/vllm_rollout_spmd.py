@@ -74,7 +74,7 @@ from verl import DataProto
 from verl.third_party.vllm import VLLM_SLEEP_LEVEL, get_version
 from verl.utils.device import is_npu_available
 from verl.utils.distributed import initialize_global_process_group_ray
-from verl.utils.eos_semantics import validate_eos_mode
+from verl.utils.eos_semantics import validate_eos_mode, validate_semantic_eos_token_ids
 from verl.utils.model import get_lora_rank_from_adapter
 from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.ray_utils import ray_noset_visible_devices
@@ -95,27 +95,24 @@ def resolve_eos_sampling_overrides(
     *,
     mode: str,
     semantic_eos_token_ids: list[int],
-    canonical_bad_word: str | None,
+    canonical_bad_words: list[str] | None = None,
 ) -> dict[str, Any]:
     """Resolve opt-in vLLM sampling changes for one EOS experiment mode."""
     mode = validate_eos_mode(mode)
     if mode == "baseline":
         return {}
 
-    eos_ids = [int(token_id) for token_id in semantic_eos_token_ids]
-    if not eos_ids or len(set(eos_ids)) != len(eos_ids):
-        raise ValueError("EOS intervention modes require a non-empty list of distinct semantic EOS token ids")
+    eos_ids = validate_semantic_eos_token_ids(semantic_eos_token_ids, mode=mode)
     if mode in {"two_stop", "semantic_class"}:
         return {"stop_token_ids": eos_ids}
 
-    if len(eos_ids) != 2:
-        raise ValueError("Pairwise EOS intervention modes require exactly two distinct semantic EOS token ids")
-    e1, e2 = eos_ids
+    # vLLM otherwise adds the model's generation-config EOS IDs to the explicit stops.
+    overrides = {"stop_token_ids": eos_ids[:1], "ignore_eos": True}
     if mode == "canonical":
-        if not canonical_bad_word:
-            raise ValueError("canonical_bad_word is required for canonical EOS mode")
-        return {"stop_token_ids": [e1], "bad_words": [canonical_bad_word]}
-    return {"stop_token_ids": [e1]}
+        if not canonical_bad_words or len(canonical_bad_words) != len(eos_ids) - 1:
+            raise ValueError("canonical mode requires one bad word for each noncanonical EOS ID")
+        overrides["bad_words"] = canonical_bad_words
+    return overrides
 
 
 def merge_eos_sampling_overrides(kwargs: dict[str, Any], overrides: dict[str, Any]) -> None:
@@ -317,19 +314,18 @@ class vLLMRollout(BaseRollout):
 
         self.eos_mode = validate_eos_mode(config.get("eos_mode", "baseline"))
         self.semantic_eos_token_ids = [int(token_id) for token_id in config.get("semantic_eos_token_ids", [])]
-        canonical_bad_word = None
+        canonical_bad_words = []
         if self.eos_mode == "canonical":
-            if len(self.semantic_eos_token_ids) != 2:
-                raise ValueError("Canonical EOS mode requires exactly two semantic EOS token ids")
-            e2 = self.semantic_eos_token_ids[1]
-            canonical_bad_word = tokenizer.convert_ids_to_tokens(e2)
-            if tokenizer.encode(canonical_bad_word, add_special_tokens=False) != [e2]:
-                raise ValueError(f"EOS token {e2} must round-trip as one tokenizer token for canonical mode")
+            for token_id in self.semantic_eos_token_ids[1:]:
+                token = tokenizer.convert_ids_to_tokens(token_id)
+                if not isinstance(token, str) or tokenizer.encode(token, add_special_tokens=False) != [token_id]:
+                    raise ValueError(f"EOS token {token_id} must round-trip as one tokenizer token for canonical mode")
+                canonical_bad_words.append(token)
 
         eos_overrides = resolve_eos_sampling_overrides(
             mode=self.eos_mode,
             semantic_eos_token_ids=self.semantic_eos_token_ids,
-            canonical_bad_word=canonical_bad_word,
+            canonical_bad_words=canonical_bad_words,
         )
         if self.eos_mode == "baseline" and model_config.additional_eos_token_ids:
             kwargs["stop_token_ids"] = model_config.effective_eos_token_ids

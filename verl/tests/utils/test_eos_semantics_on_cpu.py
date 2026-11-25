@@ -102,7 +102,7 @@ def test_canonical_policy_masks_e2_and_renormalizes_every_remaining_action():
         torch.tensor([[0.20 / 0.60, 0.30 / 0.60, 0.10 / 0.60]], dtype=torch.float64),
     )
 
-    with pytest.raises(ValueError, match="sampled blocked EOS token"):
+    with pytest.raises(ValueError, match="sampled a blocked EOS token"):
         student_policy_log_probs(
             logits=logits[:, :1],
             sampled_ids=torch.tensor([[3]]),
@@ -163,15 +163,40 @@ def test_semantic_class_accepts_a_single_terminal_token():
 
 
 @pytest.mark.parametrize("mode", ["teacher_map", "canonical"])
-def test_pairwise_only_modes_reject_three_semantic_eos_ids(mode):
-    with pytest.raises(ValueError, match="exactly two"):
-        student_policy_log_probs(
-            logits=torch.zeros(1, 1, 5),
-            sampled_ids=torch.tensor([[1]]),
-            raw_sampled_log_probs=torch.zeros(1, 1),
-            mode=mode,
-            semantic_eos_token_ids=[1, 3, 4],
-        )
+@pytest.mark.parametrize(("eos_mass", "retained"), [(0.5, 1e-4), (1e-6, 2.5e-7), (1e-100, 2.5e-101)])
+def test_mapping_three_eos_ids_preserves_mass(mode, eos_mass, retained):
+    sampled_ids = torch.tensor([1, 3, 4, 2])
+    raw = torch.full((4,), -2.0, dtype=torch.float64)
+    teacher_eos = torch.full((4, 3), eos_mass / 3, dtype=torch.float64).log()
+    mapped = map_teacher_sampled_log_probs(
+        raw_sampled_log_probs=raw,
+        teacher_eos_log_probs=teacher_eos,
+        sampled_ids=sampled_ids,
+        mode=mode,
+        semantic_eos_token_ids=[1, 3, 4],
+        epsilon=1e-4,
+    )
+    expected = torch.tensor([eos_mass - 2 * retained, retained, retained], dtype=torch.float64)
+    torch.testing.assert_close(mapped[:3], expected.log())
+    torch.testing.assert_close(mapped[3], raw[3])
+
+
+def test_canonical_policy_excludes_both_blocked_logits_and_gradients():
+    logits = torch.tensor([[0.1, 0.2, 0.3, 75.0, 90.0, 0.4]], requires_grad=True)
+    expected_logits = logits.detach().clone().requires_grad_()
+    sampled_ids = torch.tensor([5])
+    scores = student_policy_log_probs(
+        logits=logits,
+        sampled_ids=sampled_ids,
+        raw_sampled_log_probs=torch.zeros(1),
+        mode="canonical",
+        semantic_eos_token_ids=[1, 3, 4],
+    )
+    expected = expected_logits.index_fill(-1, torch.tensor([3, 4]), -torch.inf).log_softmax(-1)[:, 5]
+    scores.sum().backward()
+    expected.sum().backward()
+    torch.testing.assert_close(scores, expected)
+    torch.testing.assert_close(logits.grad, expected_logits.grad)
 
 
 def test_fixed_token_log_probs_match_full_log_softmax_without_materializing_it():

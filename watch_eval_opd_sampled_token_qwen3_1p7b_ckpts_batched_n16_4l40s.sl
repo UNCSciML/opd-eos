@@ -290,6 +290,10 @@ export TORCH_EXTENSIONS_DIR="$TMPDIR/torch_extensions"
 export FLASHINFER_WORKSPACE_BASE="$TMPDIR/flashinfer_workspace"
 mkdir -p "$TMPDIR" "$TORCH_EXTENSIONS_DIR" "$FLASHINFER_WORKSPACE_BASE"
 
+EOS_ARGS=()
+case "$EOS_MODE" in
+    teacher_map|canonical) EOS_ARGS+=(--ignore-model-eos) ;;
+esac
 THINKING_ARGS=()
 if [ "$ENABLE_THINKING" = "true" ]; then
     THINKING_ARGS+=(--enable-thinking)
@@ -327,7 +331,7 @@ evaluate_step() {
             --blocked-token-ids "$BLOCKED_TOKEN_IDS" \
             --prompt-template "$eval_template" \
             --chat-template-model "$CHAT_TEMPLATE_MODEL" \
-            "${THINKING_ARGS[@]}" \
+            "${THINKING_ARGS[@]}" "${EOS_ARGS[@]}" \
             --trust-remote-code \
             --batched-n-sampling \
             --log-wandb \
@@ -379,7 +383,7 @@ write_final_summary() {
             --blocked-token-ids "$BLOCKED_TOKEN_IDS" \
             --prompt-template "$eval_template" \
             --chat-template-model "$CHAT_TEMPLATE_MODEL" \
-            "${THINKING_ARGS[@]}" \
+            "${THINKING_ARGS[@]}" "${EOS_ARGS[@]}" \
             --trust-remote-code \
             --batched-n-sampling
     done

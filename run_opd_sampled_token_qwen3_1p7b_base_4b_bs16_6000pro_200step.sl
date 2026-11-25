@@ -27,6 +27,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-OPD Length Inflation}
 TRAIN_TEMPLATE=${TRAIN_TEMPLATE:-ttrl}
 EOS_MODE=${EOS_MODE:-baseline}
 SEMANTIC_EOS_TOKEN_IDS=${SEMANTIC_EOS_TOKEN_IDS:-}
+CANONICAL_EOS_TOKEN_ID=${CANONICAL_EOS_TOKEN_ID:-}
 EOS_MAPPING_EPSILON=${EOS_MAPPING_EPSILON:-1e-12}
 case "$TRAIN_TEMPLATE" in
     dapo)
@@ -50,6 +51,7 @@ esac
 TEST_DATA_DIR="$PROJECT_ROOT/datasets/test_data"
 TEST_DATASET="[$TEST_DATA_DIR/AIME25/test.parquet,$TEST_DATA_DIR/AMC23/test.parquet,$TEST_DATA_DIR/AIME24/test.parquet]"
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
+TRAIN_GPUS_PER_NODE=${TRAIN_GPUS_PER_NODE:-4}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-$TRAIN_BATCH_SIZE}
 ROLLOUT_N=${ROLLOUT_N:-4}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
@@ -85,9 +87,11 @@ if [ "$DRY_RUN" = "true" ]; then
     echo "reward_function_path=$REWARD_FUNCTION_PATH"
     echo "eos_mode=$EOS_MODE"
     echo "semantic_eos_token_ids=${SEMANTIC_EOS_TOKEN_IDS:-auto}"
+    echo "canonical_eos_token_id=${CANONICAL_EOS_TOKEN_ID:-auto}"
     echo "additional_eos_token_ids=manifest-derived"
     echo "chat_template_model=${CHAT_TEMPLATE_MODEL:-student-model}"
     echo "train_batch_size=$TRAIN_BATCH_SIZE"
+    echo "train_gpus_per_node=$TRAIN_GPUS_PER_NODE"
     echo "rollout_n=$ROLLOUT_N"
     echo "max_response_length=$MAX_RESPONSE_LENGTH"
     echo "ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU"
@@ -183,6 +187,9 @@ trap cleanup_ray EXIT
 SEMANTIC_ID_ARGS=()
 if [ -n "$SEMANTIC_EOS_TOKEN_IDS" ]; then
     SEMANTIC_ID_ARGS+=(--semantic-eos-token-ids "$SEMANTIC_EOS_TOKEN_IDS")
+fi
+if [ -n "$CANONICAL_EOS_TOKEN_ID" ]; then
+    SEMANTIC_ID_ARGS+=(--canonical-eos-token-id "$CANONICAL_EOS_TOKEN_ID")
 fi
 CHAT_TEMPLATE_ARGS=()
 if [ -n "$CHAT_TEMPLATE_MODEL" ]; then
@@ -309,7 +316,7 @@ python -m verl.trainer.main_ppo \
     trainer.project_name="$WANDB_PROJECT" \
     trainer.experiment_name="$EXPERIMENT_NAME" \
     trainer.validation_data_dir="validation_log/$EXPERIMENT_NAME" \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node="$TRAIN_GPUS_PER_NODE" \
     trainer.nnodes=1 \
     trainer.save_freq="$SAVE_FREQ" \
     trainer.test_freq="$TEST_FREQ" \

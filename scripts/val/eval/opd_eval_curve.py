@@ -95,6 +95,9 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated token ids excluded from sampling; empty keeps the model distribution unchanged.",
     )
+    parser.add_argument(
+        "--ignore-model-eos", action="store_true", help="Stop only on explicit --stop-token-ids."
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--log-wandb", action="store_true")
     parser.add_argument("--wandb-project", default="OPD Length Inflation")
@@ -319,6 +322,7 @@ def generate_batched_requests(
     stop_token_ids: list[int] | None,
     blocked_token_ids: list[int] | None,
     chat_template: str | None = None,
+    ignore_model_eos: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """Submit one prompt batch to a vLLM engine and expand its n completions."""
     results: dict[str, list[dict[str, Any]]] = {task["name"]: [] for task in task_payloads}
@@ -348,6 +352,8 @@ def generate_batched_requests(
         stop_token_ids=resolve_stop_token_ids(tokenizer, stop_token_ids),
     )
     bad_words = resolve_blocked_token_bad_words(tokenizer, blocked_token_ids)
+    if ignore_model_eos:
+        sampling_kwargs["ignore_eos"] = True
     if bad_words:
         sampling_kwargs["bad_words"] = bad_words
     sampling = sampling_params_cls(**sampling_kwargs)
@@ -375,6 +381,7 @@ def worker_generate(args_tuple: tuple[Any, ...]) -> dict[str, list[dict[str, Any
         configured_stop_token_ids,
         configured_blocked_token_ids,
         chat_template,
+        ignore_model_eos,
     ) = args_tuple
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -425,6 +432,8 @@ def worker_generate(args_tuple: tuple[Any, ...]) -> dict[str, list[dict[str, Any
                     seed=seed_base + int(rollout_id),
                     stop_token_ids=stop_token_ids or None,
                 )
+                if ignore_model_eos:
+                    sampling_kwargs["ignore_eos"] = True
                 if bad_words:
                     sampling_kwargs["bad_words"] = bad_words
                 sampling = SamplingParams(**sampling_kwargs)
@@ -474,6 +483,7 @@ def worker_generate_batched_n(args_tuple: tuple[Any, ...]) -> dict[str, list[dic
         configured_stop_token_ids,
         configured_blocked_token_ids,
         chat_template,
+        ignore_model_eos,
     ) = args_tuple
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -515,6 +525,7 @@ def worker_generate_batched_n(args_tuple: tuple[Any, ...]) -> dict[str, list[dic
             stop_token_ids=configured_stop_token_ids,
             blocked_token_ids=configured_blocked_token_ids,
             chat_template=chat_template,
+            ignore_model_eos=ignore_model_eos,
         )
 
     finally:
@@ -613,7 +624,7 @@ def build_eval_run_config(
     gpu_ids: list[str],
 ) -> dict[str, Any]:
     task_payload_json = json.dumps(task_payloads, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return {
+    config = {
         "schema_version": 1,
         "checkpoint_root": str(args.checkpoint_root),
         "base_model": str(args.base_model),
@@ -637,6 +648,9 @@ def build_eval_run_config(
         "batched_n_sampling": args.batched_n_sampling,
         "trust_remote_code": args.trust_remote_code,
     }
+    if args.ignore_model_eos:
+        config["ignore_model_eos"] = True
+    return config
 
 
 def write_generation_results(output_path: Path, rows: list[dict[str, Any]]) -> None:
@@ -703,6 +717,7 @@ def generate_for_model(
                 args.stop_token_ids,
                 args.blocked_token_ids,
                 args.chat_template,
+                args.ignore_model_eos,
             )
             for idx, gpu_id in enumerate(gpu_ids)
             if task_chunks[idx]
@@ -727,6 +742,7 @@ def generate_for_model(
                 args.stop_token_ids,
                 args.blocked_token_ids,
                 args.chat_template,
+                args.ignore_model_eos,
             )
             for idx, gpu_id in enumerate(gpu_ids)
             if rollout_chunks[idx]
@@ -935,6 +951,7 @@ def init_wandb(args: argparse.Namespace, specs: list[ModelSpec]):
                 "enable_thinking": args.enable_thinking,
                 "stop_token_ids": args.stop_token_ids,
                 "blocked_token_ids": args.blocked_token_ids,
+                "ignore_model_eos": args.ignore_model_eos,
                 "prompt_template": args.prompt_template,
             },
         )
@@ -947,6 +964,8 @@ def main() -> None:
     args = parse_args()
     args.stop_token_ids = parse_stop_token_ids(args.stop_token_ids)
     args.blocked_token_ids = parse_stop_token_ids(args.blocked_token_ids)
+    if args.ignore_model_eos and not args.stop_token_ids:
+        raise ValueError("--ignore-model-eos requires explicit --stop-token-ids")
     args.chat_template = None
     args.chat_template_sha256 = None
     if args.chat_template_model:

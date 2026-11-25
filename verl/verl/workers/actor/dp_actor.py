@@ -30,7 +30,7 @@ from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
-from verl.utils.eos_semantics import student_policy_log_probs, validate_eos_mode
+from verl.utils.eos_semantics import student_policy_log_probs, validate_eos_mode, validate_semantic_eos_token_ids
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
 from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.py_functional import append_to_dict
@@ -106,18 +106,16 @@ class DataParallelPPOActor(BasePPOActor):
         eos_mode = validate_eos_mode(eos_mode)
         semantic_eos_token_ids = [int(token_id) for token_id in (semantic_eos_token_ids or [])]
         needs_eos_policy = eos_mode in {"semantic_class", "canonical"}
-        if eos_mode == "semantic_class" and (
-            not semantic_eos_token_ids or len(set(semantic_eos_token_ids)) != len(semantic_eos_token_ids)
-        ):
-            raise ValueError("semantic_class requires a non-empty list of distinct semantic EOS token ids")
-        if eos_mode == "canonical" and (
-            len(semantic_eos_token_ids) != 2 or semantic_eos_token_ids[0] == semantic_eos_token_ids[1]
-        ):
-            raise ValueError("canonical requires exactly two distinct semantic EOS token ids")
-        if eos_mode == "canonical" and torch.any(micro_batch["responses"] == semantic_eos_token_ids[1]):
-            raise ValueError(f"Canonical EOS policy sampled blocked EOS token {semantic_eos_token_ids[1]}")
-
-        response_length = micro_batch["responses"].size(-1)
+        if needs_eos_policy:
+            validate_semantic_eos_token_ids(semantic_eos_token_ids, mode=eos_mode)
+        responses = micro_batch["responses"]
+        response_length = responses.size(-1)
+        if eos_mode == "canonical":
+            blocked_ids = responses.new_tensor(semantic_eos_token_ids[1:])
+            blocked_responses = torch.isin(responses, blocked_ids)
+            response_mask = micro_batch["attention_mask"][:, -response_length:].bool()
+            if torch.any(blocked_responses & response_mask):
+                raise ValueError(f"Canonical EOS policy sampled a blocked EOS token from {semantic_eos_token_ids[1:]}")
         multi_modal_inputs = {}
         if "multi_modal_inputs" in micro_batch.keys():
             from verl.utils.model import extract_multi_modal_inputs
@@ -253,8 +251,10 @@ class DataParallelPPOActor(BasePPOActor):
                     if needs_eos_policy:
                         policy_labels = input_ids_rmpad_rolled
                         if eos_mode == "canonical":
-                            e1, e2 = semantic_eos_token_ids
-                            policy_labels = torch.where(policy_labels == e2, e1, policy_labels)
+                            # The shifted labels also include prompt tokens, which may contain blocked EOS IDs.
+                            policy_labels = policy_labels.masked_fill(
+                                torch.isin(policy_labels, blocked_ids), semantic_eos_token_ids[0]
+                            )
                         log_probs = student_policy_log_probs(
                             logits=logits_rmpad,
                             sampled_ids=policy_labels,
@@ -449,9 +449,12 @@ class DataParallelPPOActor(BasePPOActor):
                             )
 
                     if needs_eos_policy:
+                        policy_labels = responses
+                        if eos_mode == "canonical":
+                            policy_labels = responses.masked_fill(blocked_responses, semantic_eos_token_ids[0])
                         log_probs = student_policy_log_probs(
                             logits=logits,
-                            sampled_ids=micro_batch["responses"],
+                            sampled_ids=policy_labels,
                             raw_sampled_log_probs=log_probs,
                             mode=eos_mode,
                             semantic_eos_token_ids=semantic_eos_token_ids,

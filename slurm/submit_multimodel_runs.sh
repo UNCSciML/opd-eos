@@ -37,7 +37,7 @@
 #   RUN_TAG=multimodel-v1 bash slurm/submit_multimodel_runs.sh
 #
 # MODELS accepts a comma-separated subset of: llama,gemma
-# EOS_MODES accepts a comma-separated subset of: baseline,semantic_class
+# EOS_MODES accepts a comma-separated subset of: baseline,semantic_class,teacher_map,canonical
 # RUN_TAG is appended to every experiment name; use a stable label so a rerun
 # does not collide with an earlier sweep.
 #
@@ -66,9 +66,6 @@
 #   on the task and the Gemma one is the larger, so this is form, not capacity.
 #   Run it as a control, not as a fix expected to work. The Gemma train wrapper
 #   carries the full measurement.
-# teacher_map and canonical are pairwise-only and are unavailable for both of
-# these pairs; they fail preflight with an explicit error, so they are not
-# offered here.
 #
 # Adapting this script to another cluster
 # ---------------------------------------
@@ -82,9 +79,9 @@
 #      export SBATCH_GRES=gpu:4
 #      export SBATCH_CPUS_PER_TASK=16
 #      export SBATCH_TIMELIMIT=1-00:00:00
-#    Keep four GPUs: checkpoints are saved as model_world_size_4_rank_*.pt and
-#    the evaluator expects that layout. Leave SBATCH_MEM unset unless you must
-#    override it, because train and eval want different amounts.
+#    Keep four GPUs for the formal runs. For a one-GPU smoke, also set
+#    TRAIN_GPUS_PER_NODE=1. Leave SBATCH_MEM unset unless you must override it,
+#    because train and eval want different amounts.
 # 2. Python environment: export CONDA_ENV=/path/to/opd-environment. It is passed
 #    through to every job by --export=ALL.
 # 3. Checkout location: run this script from anywhere; it resolves PROJECT_ROOT
@@ -124,7 +121,10 @@ submit_one() {
     eval "prefix=\$TRAIN_PREFIX_$model"
     eval "train_stem=\$TRAIN_FILE_STEM_$model"
     eval "eval_script=\$EVAL_FILE_$model"
-    train_script="${train_stem}_${mode}_200step.sl"
+    case "$mode" in
+        teacher_map|canonical) train_script="${train_stem}_baseline_200step.sl" ;;
+        *) train_script="${train_stem}_${mode}_200step.sl" ;;
+    esac
     experiment_name="${prefix}_${mode}_${RUN_TAG}"
     checkpoint_root="$PROJECT_ROOT/checkpoint/$experiment_name"
 
@@ -142,7 +142,7 @@ submit_one() {
         eval_job=DRY_RUN
     else
         train_job=$(
-            PROJECT_ROOT="$PROJECT_ROOT" EXPERIMENT_NAME="$experiment_name" WANDB_PROJECT="$WANDB_PROJECT" \
+            EOS_MODE="$mode" PROJECT_ROOT="$PROJECT_ROOT" EXPERIMENT_NAME="$experiment_name" WANDB_PROJECT="$WANDB_PROJECT" \
                 sbatch --parsable --export=ALL "$PROJECT_ROOT/slurm/train/$train_script"
         )
         eval_job=$(
@@ -159,7 +159,7 @@ submit_one() {
 matched=false
 for model in llama gemma; do
     selected "$model" "$MODELS" || continue
-    for mode in baseline semantic_class; do
+    for mode in baseline semantic_class teacher_map canonical; do
         selected "$mode" "$EOS_MODES" || continue
         matched=true
         submit_one "$model" "$mode"
@@ -167,7 +167,7 @@ for model in llama gemma; do
 done
 
 if [ "$matched" = false ]; then
-    echo "Nothing selected. MODELS must be a subset of llama,gemma and EOS_MODES a subset of baseline,semantic_class" >&2
+    echo "Nothing selected. MODELS must be a subset of llama,gemma and EOS_MODES a subset of baseline,semantic_class,teacher_map,canonical" >&2
     exit 2
 fi
 

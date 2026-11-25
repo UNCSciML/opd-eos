@@ -64,6 +64,7 @@ from verl.utils.eos_semantics import (
     gather_fixed_token_log_probs,
     map_teacher_sampled_log_probs,
     validate_eos_mode,
+    validate_semantic_eos_token_ids,
 )
 from verl.utils.flops_counter import FlopsCounter
 from verl.utils.fs import copy_to_local
@@ -1959,14 +1960,8 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         import verl.utils.torch_functional as verl_F
         eos_mode = validate_eos_mode(eos_mode)
         semantic_eos_token_ids = [int(token_id) for token_id in (semantic_eos_token_ids or [])]
-        if eos_mode in {"teacher_map", "canonical"} and (
-            len(semantic_eos_token_ids) != 2 or semantic_eos_token_ids[0] == semantic_eos_token_ids[1]
-        ):
-            raise ValueError(f"{eos_mode} requires exactly two distinct semantic EOS token ids")
-        if eos_mode in {"two_stop", "semantic_class"} and (
-            not semantic_eos_token_ids or len(set(semantic_eos_token_ids)) != len(semantic_eos_token_ids)
-        ):
-            raise ValueError(f"{eos_mode} requires a non-empty list of distinct semantic EOS token ids")
+        if eos_mode != "baseline":
+            validate_semantic_eos_token_ids(semantic_eos_token_ids, mode=eos_mode)
         track_teacher_eos = bool(semantic_eos_token_ids)
         response_length = micro_batch["responses"].size(-1)
         with torch.no_grad(), torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):

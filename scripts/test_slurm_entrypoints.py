@@ -209,6 +209,36 @@ def test_checkpoint_eval_dry_run_inherits_all_generation_settings_from_train_man
     assert "wandb_project=OPD Length Inflation" in result.stdout
 
 
+def test_checkpoint_eval_checks_shards_using_the_saved_world_size(tmp_path):
+    checkpoint_root = tmp_path / "checkpoint"
+    actor = checkpoint_root / "global_step_1" / "actor"
+    (actor / "huggingface").mkdir(parents=True)
+    (actor / "huggingface" / "config.json").write_text("{}")
+    (actor / "fsdp_config.json").write_text('{"world_size": 2}')
+    (actor / "model_world_size_2_rank_0.pt").touch()
+    (checkpoint_root / "run_semantics.json").write_text(json.dumps({
+        "model_path": "/models/student",
+        "enable_thinking": False,
+        "prompt_template": "ttrl",
+        "eos_mode": "canonical",
+        "rollout_stop_token_ids": [1],
+        "blocked_token_ids": [106],
+    }))
+
+    result = run_script(
+        CHECKPOINT_EVAL,
+        DRY_RUN="false",
+        CHECKPOINT_ROOT=checkpoint_root,
+        OUTPUT_ROOT=tmp_path / "eval",
+        MERGED_ROOT=tmp_path / "merged",
+        CONDA_ENV=Path(sys.executable).resolve().parent.parent,
+        STEPS="1",
+    )
+
+    assert result.returncode == 1
+    assert f"Missing checkpoint shard: {actor / 'model_world_size_2_rank_1.pt'}" in result.stderr
+
+
 def test_ttrl_eos_sweep_dry_run_chains_one_matching_eval_after_each_train():
     result = run_script(SWEEP_SUBMIT, SWEEP_TAG="test-sweep")
 
@@ -219,6 +249,23 @@ def test_ttrl_eos_sweep_dry_run_chains_one_matching_eval_after_each_train():
         assert f"checkpoint/{experiment}" in result.stdout
         assert f"dependency=afterok:DRY_RUN-{mode}" in result.stdout
     assert result.stdout.count("eval_job=DRY_RUN") == 5
+
+
+def test_multimodel_fix24_dry_run_chains_each_ablation_to_its_eval():
+    result = run_script(
+        PROJECT_ROOT / "slurm" / "submit_multimodel_runs.sh",
+        MODELS="llama,gemma",
+        EOS_MODES="teacher_map,canonical",
+        RUN_TAG="test-fix24",
+    )
+
+    assert result.returncode == 0, result.stderr
+    for model in ("llama", "gemma"):
+        for mode in ("teacher_map", "canonical"):
+            train_job = f"DRY_RUN-{model}-{mode}"
+            assert f"model={model} mode={mode} train_job={train_job}" in result.stdout
+            assert f"model={model} mode={mode} eval_job=DRY_RUN dependency=afterok:{train_job}" in result.stdout
+    assert result.stdout.count("eval_job=DRY_RUN") == 4
 
 
 def test_submitted_wrapper_uses_slurm_submit_directory_instead_of_spool_location(tmp_path):

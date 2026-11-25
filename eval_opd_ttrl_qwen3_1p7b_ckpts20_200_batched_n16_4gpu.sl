@@ -132,8 +132,16 @@ for step in "${requested_steps[@]}"; do
         echo "Missing checkpoint metadata: $actor_dir/huggingface/config.json" >&2
         exit 1
     fi
-    for rank in 0 1 2 3; do
-        shard="$actor_dir/model_world_size_4_rank_${rank}.pt"
+    world_size=$(
+        "$SEMANTICS_PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1]))["world_size"])' \
+            "$actor_dir/fsdp_config.json"
+    )
+    if [[ ! "$world_size" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Invalid checkpoint world size in $actor_dir/fsdp_config.json: $world_size" >&2
+        exit 1
+    fi
+    for ((rank = 0; rank < world_size; rank++)); do
+        shard="$actor_dir/model_world_size_${world_size}_rank_${rank}.pt"
         if [ ! -f "$shard" ]; then
             echo "Missing checkpoint shard: $shard" >&2
             exit 1
@@ -188,6 +196,10 @@ mkdir -p "$TMPDIR" "$TORCH_EXTENSIONS_DIR" "$FLASHINFER_WORKSPACE_BASE"
 
 cd "$PROJECT_ROOT/scripts/val/eval"
 
+EOS_ARGS=()
+case "$EOS_MODE" in
+    teacher_map|canonical) EOS_ARGS+=(--ignore-model-eos) ;;
+esac
 THINKING_ARGS=()
 if [ "$ENABLE_THINKING" = "true" ]; then
     THINKING_ARGS+=(--enable-thinking)
@@ -214,7 +226,7 @@ python opd_eval_curve.py \
     --blocked-token-ids "$BLOCKED_TOKEN_IDS" \
     --prompt-template "$EVAL_TEMPLATE" \
     --chat-template-model "$CHAT_TEMPLATE_MODEL" \
-    "${THINKING_ARGS[@]}" \
+    "${THINKING_ARGS[@]}" "${EOS_ARGS[@]}" \
     --trust-remote-code \
     --batched-n-sampling \
     --log-wandb \

@@ -175,9 +175,11 @@ def test_batched_generation_blocks_manifest_tokens_for_canonical_eos():
         seed=0,
         stop_token_ids=[151643],
         blocked_token_ids=[151645],
+        ignore_model_eos=True,
     )
 
     sampling_params = llm.calls[0][1]
+    assert sampling_params.kwargs["ignore_eos"] is True
     assert sampling_params.kwargs["stop_token_ids"] == [151643]
     assert sampling_params.kwargs["bad_words"] == ["<|im_end|>"]
 

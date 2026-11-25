@@ -59,7 +59,12 @@ export ACTOR_MODEL_PATH=${ACTOR_MODEL_PATH:-google/gemma-3-4b-pt}
 export REWARD_MODEL_PATH=${REWARD_MODEL_PATH:-google/gemma-3-4b-it}
 export CHAT_TEMPLATE_MODEL=${CHAT_TEMPLATE_MODEL:-$REWARD_MODEL_PATH}
 export TRAIN_TEMPLATE=ttrl
-export EOS_MODE=baseline
+# Fix 2 and Fix 4 share the baseline model and training settings.
+export EOS_MODE=${EOS_MODE:-baseline}
+case "$EOS_MODE" in
+    baseline|teacher_map|canonical) ;;
+    *) echo "Unsupported EOS_MODE for this launcher: $EOS_MODE" >&2; exit 2 ;;
+esac
 export ENABLE_THINKING=False
 # Gemma-3's processor emits variable-length token_type_ids even for text-only
 # samples. They are optional for text-only forward passes and must not be
@@ -100,7 +105,7 @@ else
 fi
 
 RUN_SUFFIX=${SLURM_JOB_ID:-manual}
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-opd_ttrl_gemma3_4bpt_to_4bit_baseline_${RUN_SUFFIX}}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-opd_ttrl_gemma3_4bpt_to_4bit_${EOS_MODE}_${RUN_SUFFIX}}
 export LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/$EXPERIMENT_NAME}
 export EOS_DIAGNOSTIC_OUTPUT_DIR=${EOS_DIAGNOSTIC_OUTPUT_DIR:-$PROJECT_ROOT/diagnostics/$EXPERIMENT_NAME}
 

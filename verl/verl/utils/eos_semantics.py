@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import torch
@@ -24,12 +25,12 @@ def gather_fixed_token_log_probs(logits: torch.Tensor, token_ids: Sequence[int])
     return selected_logits - torch.logsumexp(logits, dim=-1, keepdim=True)
 
 
-def _validate_semantic_eos_token_ids(token_ids: Sequence[int], *, exactly_two: bool = False) -> list[int]:
+def validate_semantic_eos_token_ids(token_ids: Sequence[int], *, mode: str) -> list[int]:
     ids = [int(token_id) for token_id in token_ids]
-    if exactly_two and (len(ids) != 2 or ids[0] == ids[1]):
-        raise ValueError("This EOS mode requires exactly two distinct semantic EOS token ids")
-    if not exactly_two and (not ids or len(set(ids)) != len(ids)):
+    if not ids or len(set(ids)) != len(ids):
         raise ValueError("Semantic EOS token ids must be a non-empty list of distinct ids")
+    if mode in {"teacher_map", "canonical"} and len(ids) < 2:
+        raise ValueError(f"{mode} requires at least two distinct semantic EOS token ids")
     return ids
 
 
@@ -52,10 +53,7 @@ def map_teacher_sampled_log_probs(
     if mode in {"baseline", "two_stop"}:
         return raw_sampled_log_probs
 
-    eos_ids = _validate_semantic_eos_token_ids(
-        semantic_eos_token_ids,
-        exactly_two=mode in {"teacher_map", "canonical"},
-    )
+    eos_ids = validate_semantic_eos_token_ids(semantic_eos_token_ids, mode=mode)
     if teacher_eos_log_probs.size(-1) != len(eos_ids):
         raise ValueError(
             "teacher_eos_log_probs final dimension must match semantic_eos_token_ids "
@@ -67,17 +65,18 @@ def map_teacher_sampled_log_probs(
     if mode == "semantic_class":
         return torch.where(eos_sample, combined_log_prob, raw_sampled_log_probs)
 
-    e1, e2 = eos_ids
     if epsilon <= 0:
         raise ValueError("EOS mapping epsilon must be positive")
-    combined_prob = combined_log_prob.exp()
-    requested_epsilon = torch.full_like(combined_prob, epsilon)
-    mapped_e2_prob = torch.minimum(requested_epsilon, combined_prob * 0.5)
-    mapped_e1_log_prob = (combined_prob - mapped_e2_prob).log()
-    mapped_e2_log_prob = mapped_e2_prob.log()
+    canonical_id, *other_ids = eos_ids
+    log_other_count = math.log(len(other_ids))
+    log_epsilon = math.log(epsilon)
+    # Use epsilon for each other EOS, capped so canonical retains at least half of the total.
+    other_log_prob = torch.clamp(combined_log_prob - (math.log(2) + log_other_count), max=log_epsilon)
+    other_fraction = torch.clamp(log_epsilon + log_other_count - combined_log_prob, max=-math.log(2)).exp()
+    canonical_log_prob = combined_log_prob + torch.log1p(-other_fraction)
 
-    mapped = torch.where(sampled_ids == e1, mapped_e1_log_prob, raw_sampled_log_probs)
-    return torch.where(sampled_ids == e2, mapped_e2_log_prob, mapped)
+    mapped_eos_log_prob = torch.where(sampled_ids == canonical_id, canonical_log_prob, other_log_prob)
+    return torch.where(eos_sample, mapped_eos_log_prob, raw_sampled_log_probs)
 
 
 def student_policy_log_probs(
@@ -93,10 +92,7 @@ def student_policy_log_probs(
     if mode in {"baseline", "two_stop"}:
         return raw_sampled_log_probs
 
-    eos_ids = _validate_semantic_eos_token_ids(
-        semantic_eos_token_ids,
-        exactly_two=mode in {"teacher_map", "canonical"},
-    )
+    eos_ids = validate_semantic_eos_token_ids(semantic_eos_token_ids, mode=mode)
     if mode == "teacher_map":
         return raw_sampled_log_probs
 
@@ -106,14 +102,19 @@ def student_policy_log_probs(
         eos_sample = _is_any_token_id(sampled_ids, eos_ids)
         return torch.where(eos_sample, combined_log_prob, raw_sampled_log_probs)
 
-    _, e2 = eos_ids
-    if torch.any(sampled_ids == e2):
-        raise ValueError(f"Canonical EOS policy sampled blocked EOS token {e2}")
+    blocked_ids = eos_ids[1:]
+    if torch.any(_is_any_token_id(sampled_ids, blocked_ids)):
+        raise ValueError(f"Canonical EOS policy sampled a blocked EOS token from {blocked_ids}")
 
-    log_normalizer = torch.logsumexp(logits, dim=-1)
-    blocked_logit = logits[..., e2]
-    blocked_fraction = (blocked_logit - log_normalizer).exp()
-    max_fraction = 1.0 - torch.finfo(blocked_fraction.dtype).eps
-    log_normalizer_without_e2 = log_normalizer + torch.log1p(-blocked_fraction.clamp_max(max_fraction))
+    # Reduce contiguous allowed slices so we avoid both cancellation and copying the full logits.
+    log_normalizer = None
+    start = 0
+    for end in [*sorted(blocked_ids), logits.size(-1)]:
+        if start < end:
+            chunk_normalizer = torch.logsumexp(logits[..., start:end], dim=-1)
+            log_normalizer = (
+                chunk_normalizer if log_normalizer is None else torch.logaddexp(log_normalizer, chunk_normalizer)
+            )
+        start = end + 1
     sampled_logits = logits.gather(dim=-1, index=sampled_ids.unsqueeze(-1)).squeeze(-1)
-    return sampled_logits - log_normalizer_without_e2
+    return sampled_logits - log_normalizer

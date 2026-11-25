@@ -59,7 +59,12 @@ export ACTOR_MODEL_PATH=${ACTOR_MODEL_PATH:-meta-llama/Llama-3.2-3B}
 export REWARD_MODEL_PATH=${REWARD_MODEL_PATH:-meta-llama/Llama-3.2-3B-Instruct}
 export CHAT_TEMPLATE_MODEL=${CHAT_TEMPLATE_MODEL:-$REWARD_MODEL_PATH}
 export TRAIN_TEMPLATE=ttrl
-export EOS_MODE=baseline
+# Fix 2 and Fix 4 share the baseline model and training settings.
+export EOS_MODE=${EOS_MODE:-baseline}
+case "$EOS_MODE" in
+    baseline|teacher_map|canonical) ;;
+    *) echo "Unsupported EOS_MODE for this launcher: $EOS_MODE" >&2; exit 2 ;;
+esac
 export ENABLE_THINKING=False
 
 export TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
@@ -93,7 +98,7 @@ else
 fi
 
 RUN_SUFFIX=${SLURM_JOB_ID:-manual}
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-opd_ttrl_llama32_3b_base_to_instruct_baseline_${RUN_SUFFIX}}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-opd_ttrl_llama32_3b_base_to_instruct_${EOS_MODE}_${RUN_SUFFIX}}
 export LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/$EXPERIMENT_NAME}
 export EOS_DIAGNOSTIC_OUTPUT_DIR=${EOS_DIAGNOSTIC_OUTPUT_DIR:-$PROJECT_ROOT/diagnostics/$EXPERIMENT_NAME}
 

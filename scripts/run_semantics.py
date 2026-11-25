@@ -60,6 +60,7 @@ def build_run_semantics(
     chat_template_model: str | None = None,
     chat_template_sha256: str | None = None,
     thinking_supported: bool | None = None,
+    canonical_eos_token_id: int | None = None,
 ) -> dict[str, Any]:
     student_ids = normalize_token_ids(model_eos_token_ids)
     teacher_ids = normalize_token_ids(teacher_eos_token_ids)
@@ -71,12 +72,19 @@ def build_run_semantics(
     semantic_ids = normalize_token_ids(semantic_eos_token_ids) or ordered_union(student_ids, teacher_ids)
     if not semantic_ids:
         raise ValueError("At least one semantic terminal token id is required")
-    if eos_mode in {"teacher_map", "canonical"} and len(student_ids) != 1:
-        raise ValueError(f"{eos_mode} requires exactly one student-native EOS token id")
-    if eos_mode in {"teacher_map", "canonical"} and len(semantic_ids) != 2:
-        raise ValueError(f"{eos_mode} requires exactly two distinct semantic terminal token ids")
-    if student_ids[0] != semantic_ids[0]:
-        raise ValueError("The first semantic EOS id must be the model's primary EOS id")
+    if eos_mode in {"teacher_map", "canonical"}:
+        if canonical_eos_token_id is None:
+            canonical_eos_token_id = student_ids[0]
+        if canonical_eos_token_id not in student_ids or canonical_eos_token_id not in semantic_ids:
+            raise ValueError("The canonical EOS id must be both a student-native and a semantic EOS id")
+        if len(semantic_ids) < 2:
+            raise ValueError(f"{eos_mode} requires at least two distinct semantic terminal token ids")
+        semantic_ids = ordered_union([canonical_eos_token_id], semantic_ids)
+    else:
+        if canonical_eos_token_id is not None:
+            raise ValueError("A canonical EOS id requires teacher_map or canonical mode")
+        if student_ids[0] != semantic_ids[0]:
+            raise ValueError("The first semantic EOS id must be the model's primary EOS id")
     prompt_template = prompt_template.strip().lower()
     if prompt_template not in PROMPT_TEMPLATES:
         raise ValueError(f"Unsupported prompt template: {prompt_template}")
@@ -96,8 +104,8 @@ def build_run_semantics(
         additional_ids = []
         rollout_stop_ids = [semantic_ids[0]]
     effective_ids = ordered_union(student_ids, additional_ids)
-    blocked_ids = [semantic_ids[1]] if eos_mode == "canonical" else []
-    return {
+    blocked_ids = semantic_ids[1:] if eos_mode == "canonical" else []
+    semantics = {
         "schema_version": 3,
         "model_path": model_path,
         "student_model_path": model_path,
@@ -122,6 +130,9 @@ def build_run_semantics(
         "tracked_token_ids": semantic_ids,
         "tracked_token_names": [f"token_{token_id}" for token_id in semantic_ids],
     }
+    if canonical_eos_token_id is not None:
+        semantics["canonical_eos_token_id"] = canonical_eos_token_id
+    return semantics
 
 
 def discover_model_eos_token_ids(model_path: str) -> list[int]:
@@ -171,6 +182,7 @@ def write_semantics(args: argparse.Namespace) -> None:
         eos_mode=args.eos_mode,
         semantic_eos_token_ids=parse_token_ids(args.semantic_eos_token_ids),
         eos_mapping_epsilon=args.eos_mapping_epsilon,
+        canonical_eos_token_id=args.canonical_eos_token_id,
         prompt_template=args.prompt_template,
         train_dataset=args.train_dataset,
     )
@@ -205,6 +217,7 @@ def parse_args() -> argparse.Namespace:
     write_parser.add_argument("--additional-eos-token-ids", default="")
     write_parser.add_argument("--eos-mode", choices=sorted(EOS_MODES), default="baseline")
     write_parser.add_argument("--semantic-eos-token-ids", default="")
+    write_parser.add_argument("--canonical-eos-token-id", type=int)
     write_parser.add_argument("--eos-mapping-epsilon", type=float, default=1e-12)
     write_parser.add_argument("--prompt-template", choices=sorted(PROMPT_TEMPLATES), default="ttrl")
     write_parser.add_argument("--train-dataset", required=True)
