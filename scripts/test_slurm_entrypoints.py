@@ -171,6 +171,14 @@ def test_train_entrypoint_discovers_project_root_after_repository_is_moved(tmp_p
     assert f"project_root={moved_root}" in result.stdout
 
 
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_train_dry_run_reports_the_rollout_seed(seed):
+    result = run_script(TRAIN_DIR / "train_ttrl_eos_a_baseline_200step.sl", TRAIN_SEED=seed)
+
+    assert result.returncode == 0, result.stderr
+    assert f"train_seed={seed}" in result.stdout
+
+
 def test_checkpoint_eval_dry_run_inherits_all_generation_settings_from_train_manifest(tmp_path):
     checkpoint_root = tmp_path / "checkpoint" / "example-run"
     checkpoint_root.mkdir(parents=True)

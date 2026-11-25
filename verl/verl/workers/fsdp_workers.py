@@ -661,6 +661,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if rollout_config.mode == "sync" and self._is_actor:
             loop = get_event_loop()
             loop.run_until_complete(self.trainer_mode())
+            if rollout_config.seed:
+                # vLLM engine initialization can replace the CUDA RNG state.
+                torch_device = get_torch_device()
+                torch_device.manual_seed(rollout_config.seed * dp + gen_dp_rank)
+                self.gen_random_states = torch_device.get_rng_state()
+                torch_device.set_rng_state(self.torch_random_states)
 
     async def rollout_mode(self):
         """Context switch hybridengine to rollout mode."""

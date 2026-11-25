@@ -101,6 +101,7 @@ class RolloutConfig(BaseConfig):
     skip_tokenizer_init: bool = True
 
     temperature: float = 1.0
+    seed: int = 0
     top_k: int = -1
     top_p: float = 1.0
     repetition_penalty: float = 1.0
